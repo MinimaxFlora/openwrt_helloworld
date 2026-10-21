@@ -457,10 +457,6 @@ jobs:
     needs: job_init
     runs-on: ubuntu-24.04
     name: Auto-update-${{ matrix.name }}
-    # The three jobs commit to main, serialise them so a push never races.
-    concurrency:
-      group: helloworld-main-sync
-      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -495,18 +491,33 @@ jobs:
             git clone --depth 1 "https://github.com/${{ matrix.repo }}.git" /tmp/upstream
           fi
 
-      - name: Apply upstream content
-        run: |
-          rsync -a --delete "/tmp/upstream/${{ matrix.path }}/" "${{ matrix.path }}/"
-
-      - name: Commit changes
+      - name: Apply upstream content and push
         run: |
           git config user.name "MinimaxFlora"
           git config user.email "MinimaxFlora@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "${{ matrix.path }} is already up to date"
-            exit 0
-          fi
-          git commit -m "${{ matrix.path }}: sync from upstream"
-          git push origin HEAD:main
+
+          # The three jobs can finish at the same time; rebase onto the newest
+          # main and re-apply the directory instead of failing the push.
+          for attempt in 1 2 3 4 5; do
+            git fetch --depth 1 origin main
+            git reset --hard FETCH_HEAD
+            rsync -a --delete "/tmp/upstream/${{ matrix.path }}/" "${{ matrix.path }}/"
+            git add -A
+
+            if git diff --cached --quiet; then
+              echo "${{ matrix.path }} is already up to date"
+              exit 0
+            fi
+
+            git commit -m "${{ matrix.path }}: sync from upstream"
+            if git push origin HEAD:main; then
+              echo "pushed on attempt $attempt"
+              exit 0
+            fi
+
+            echo "push rejected, retrying"
+            sleep 5
+          done
+
+          echo "could not push ${{ matrix.path }} after 5 attempts"
+          exit 1
