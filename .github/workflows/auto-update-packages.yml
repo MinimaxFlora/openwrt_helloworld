@@ -19,6 +19,10 @@ on:
         description: 'is update from prerelease'
         required: false
         default: 'false'  
+      sync_packages:
+        description: 'also re-sync the package sources from openwrt-passwall-packages'
+        required: false
+        default: 'false'
   schedule:
     - cron: "11 */4 * * *"
 env:
@@ -434,8 +438,8 @@ jobs:
           if [ -n "$EXISTING" ]; then
             echo "Duplicate PR with title '$title' already exists: #$EXISTING"
           else
-            git config --global user.email "smallprogramzhusir@gmail.com"
-            git config --global user.name "David Mandy"
+            git config --global user.email "MinimaxFlora@users.noreply.github.com"
+            git config --global user.name "MinimaxFlora"
 
             echo "No duplicate found, will create PR."
             git checkout -b "$branch"
@@ -451,3 +455,56 @@ jobs:
             --head "$branch" \
             --label "automated-pr"
           fi
+
+  job_sync_luci_apps:
+    if: ${{ always() }}
+    needs: job_init
+    runs-on: ubuntu-24.04
+    name: Sync LuCI apps
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Sync luci-app-passwall
+        run: |
+          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall.git /tmp/passwall
+          rsync -a --delete /tmp/passwall/luci-app-passwall/ luci-app-passwall/
+
+      - name: Sync luci-app-passwall2
+        run: |
+          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall2.git /tmp/passwall2
+          rsync -a --delete /tmp/passwall2/luci-app-passwall2/ luci-app-passwall2/
+
+      - name: Sync luci-app-openclash
+        run: |
+          # The OpenClash repository also carries the core binaries, 40+ GB of
+          # history. Fetch the LuCI app only, without the rest of the tree.
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/vernesong/OpenClash.git /tmp/openclash
+          cd /tmp/openclash
+          git sparse-checkout set luci-app-openclash
+          rsync -a --delete /tmp/openclash/luci-app-openclash/ "$GITHUB_WORKSPACE/luci-app-openclash/"
+
+      - name: Sync package sources
+        if: ${{ github.event.inputs.sync_packages == 'true' }}
+        run: |
+          git clone --depth 1 \
+            https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git /tmp/packages
+          for dir in /tmp/packages/*/; do
+            name=$(basename "$dir")
+            [ "$name" = ".github" ] && continue
+            rsync -a --delete "$dir" "$GITHUB_WORKSPACE/$name/"
+          done
+
+      - name: Commit changes
+        run: |
+          git config user.name "MinimaxFlora"
+          git config user.email "MinimaxFlora@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "the vendored LuCI apps are already up to date"
+            exit 0
+          fi
+          git commit -m "sync: update the vendored LuCI apps from upstream"
+          git push origin HEAD:main
