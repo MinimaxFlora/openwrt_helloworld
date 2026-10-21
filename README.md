@@ -49,18 +49,20 @@ workflow 自动跟进。
 只有一条 workflow：**Auto update packages v3**（`.github/workflows/auto-update-packages.yml`），
 它有三个 job。
 
-**`job_auto_update_packages`** — 每 4 小时（`11 */4 * * *`）跑一次。对每个软件包：
+**`job_auto_update_packages`** — 每 4 小时（`11 */4 * * *`）跑一次，矩阵里每个软件包一个 job
+（`Auto-update-xray-core`、`Auto-update-sing-box` …）：
 
 1. 读上游 release，和 `Makefile` 里的 `PKG_VERSION` 比版本；
 2. 有新版本就下载对应文件算 `sha256`，写回 `PKG_VERSION` / `PKG_HASH`；
 3. 推一个 `patches-<包名>-<版本>` 分支，开一个 PR。
 
-所以版本更新以 PR 的形式进来，合并与否由人决定，不会直接改动 `main`。
+**`job_auto_update_luci`** — 同样是矩阵，三个 job：`Auto-update-passwall`、
+`Auto-update-passwall2`、`Auto-update-openclash`。每个 job 把自己对应的 `luci-app-*` 整目录
+从上游同步过来，内容有变化就提交到 `main`，没变化就什么都不做。
 
-**`job_sync_luci_apps`** — 每天随同一次运行。三个 `luci-app-*` 是整目录替换，内容就是上游
-原样，没有本地改动，所以直接提交到 `main`；没有变化就什么都不做。
+三个 job 共用 `concurrency: helloworld-main-sync`，串行执行，避免同时往 `main` 推。
 
-OpenClash 仓库带了各种内核二进制，历史有 40GB 以上，所以同步时用
+OpenClash 仓库带了各种内核二进制，历史 40GB 以上，所以它的 job 用
 `--filter=blob:none --sparse` 只取 `luci-app-openclash` 一个目录。
 
 **`job_init`** — 清理旧运行记录，并保留上游提供的 SSH 调试入口（`ssh=true` 时启动 tmate）。
@@ -71,7 +73,6 @@ OpenClash 仓库带了各种内核二进制，历史有 40GB 以上，所以同�
 
 | 输入 | 作用 |
 | --- | --- |
-| `sync_packages` | 除插件外，把软件包目录也按上游整目录重刷一遍 |
 | `is_update_geodata` | 这次运行是否处理 `geoip` / `geosite` 数据包 |
 | `is_update_from_prerelease` | 用包含预发布版的 release 做版本对比 |
 | `ssh` | 启动 tmate，登录 runner 手动排查 |

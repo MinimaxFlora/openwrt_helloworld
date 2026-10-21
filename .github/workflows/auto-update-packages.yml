@@ -19,10 +19,6 @@ on:
         description: 'is update from prerelease'
         required: false
         default: 'false'  
-      sync_packages:
-        description: 'also re-sync the package sources from openwrt-passwall-packages'
-        required: false
-        default: 'false'
   schedule:
     - cron: "11 */4 * * *"
 env:
@@ -456,46 +452,52 @@ jobs:
             --label "automated-pr"
           fi
 
-  job_sync_luci_apps:
+  job_auto_update_luci:
     if: ${{ always() }}
     needs: job_init
     runs-on: ubuntu-24.04
-    name: Sync LuCI apps
+    name: Auto-update-${{ matrix.name }}
+    # The three jobs commit to main, serialise them so a push never races.
+    concurrency:
+      group: helloworld-main-sync
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: passwall
+            repo: Openwrt-Passwall/openwrt-passwall
+            path: luci-app-passwall
+            sparse: 'false'
+          - name: passwall2
+            repo: Openwrt-Passwall/openwrt-passwall2
+            path: luci-app-passwall2
+            sparse: 'false'
+          - name: openclash
+            repo: vernesong/OpenClash
+            path: luci-app-openclash
+            # The OpenClash repository also carries the core binaries, 40+ GB
+            # of history. Fetch the LuCI app only, without the rest.
+            sparse: 'true'
 
     steps:
       - name: Checkout
         uses: actions/checkout@main
 
-      - name: Sync luci-app-passwall
+      - name: Fetch ${{ matrix.path }} from upstream
         run: |
-          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall.git /tmp/passwall
-          rsync -a --delete /tmp/passwall/luci-app-passwall/ luci-app-passwall/
+          if [ "${{ matrix.sparse }}" = "true" ]; then
+            git clone --depth 1 --filter=blob:none --sparse \
+              "https://github.com/${{ matrix.repo }}.git" /tmp/upstream
+            cd /tmp/upstream
+            git sparse-checkout set "${{ matrix.path }}"
+          else
+            git clone --depth 1 "https://github.com/${{ matrix.repo }}.git" /tmp/upstream
+          fi
 
-      - name: Sync luci-app-passwall2
+      - name: Apply upstream content
         run: |
-          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall2.git /tmp/passwall2
-          rsync -a --delete /tmp/passwall2/luci-app-passwall2/ luci-app-passwall2/
-
-      - name: Sync luci-app-openclash
-        run: |
-          # The OpenClash repository also carries the core binaries, 40+ GB of
-          # history. Fetch the LuCI app only, without the rest of the tree.
-          git clone --depth 1 --filter=blob:none --sparse \
-            https://github.com/vernesong/OpenClash.git /tmp/openclash
-          cd /tmp/openclash
-          git sparse-checkout set luci-app-openclash
-          rsync -a --delete /tmp/openclash/luci-app-openclash/ "$GITHUB_WORKSPACE/luci-app-openclash/"
-
-      - name: Sync package sources
-        if: ${{ github.event.inputs.sync_packages == 'true' }}
-        run: |
-          git clone --depth 1 \
-            https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git /tmp/packages
-          for dir in /tmp/packages/*/; do
-            name=$(basename "$dir")
-            [ "$name" = ".github" ] && continue
-            rsync -a --delete "$dir" "$GITHUB_WORKSPACE/$name/"
-          done
+          rsync -a --delete "/tmp/upstream/${{ matrix.path }}/" "${{ matrix.path }}/"
 
       - name: Commit changes
         run: |
@@ -503,8 +505,8 @@ jobs:
           git config user.email "MinimaxFlora@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then
-            echo "the vendored LuCI apps are already up to date"
+            echo "${{ matrix.path }} is already up to date"
             exit 0
           fi
-          git commit -m "sync: update the vendored LuCI apps from upstream"
+          git commit -m "${{ matrix.path }}: sync from upstream"
           git push origin HEAD:main
